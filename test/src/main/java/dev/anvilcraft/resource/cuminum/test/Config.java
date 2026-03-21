@@ -1,4 +1,4 @@
-package dev.anvilcraft.cuminum.test;
+package dev.anvilcraft.resource.cuminum.test;
 
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;

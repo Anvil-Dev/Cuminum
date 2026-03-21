@@ -4,7 +4,7 @@ plugins {
     id("org.jetbrains.intellij.platform") version "2.10.2"
 }
 
-group = "dev.anvilcraft.cuminum"
+group = "dev.anvilcraft.resource"
 version = "1.0.0"
 
 repositories {

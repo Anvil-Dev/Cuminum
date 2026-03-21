@@ -1,4 +1,4 @@
-package dev.anvilcraft.cuminum.test;
+package dev.anvilcraft.resource.cuminum.test;
 
 import com.mojang.logging.LogUtils;
 import net.minecraft.client.Minecraft;

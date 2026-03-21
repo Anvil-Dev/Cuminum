@@ -1,4 +1,4 @@
-package dev.anvilcraft.cuminum.idea;
+package dev.anvilcraft.resource.cuminum.idea;
 
 import com.intellij.psi.JavaPsiFacade;
 import com.intellij.psi.PsiClass;
@@ -21,7 +21,7 @@ public class CuminumClassFinder extends PsiElementFinder {
         PsiClass originClass = JavaPsiFacade.getInstance(scope.getProject())
             .findClass(originClassName, scope);
 
-        if (originClass != null && originClass.hasAnnotation("dev.anvilcraft.cuminum.AutoCodec")) {
+        if (originClass != null && originClass.hasAnnotation("dev.anvilcraft.resource.cuminum.AutoCodec")) {
             // 3. 构建一个 LightClass（虚拟类）返回给 IDEA
             return new CuminLightClass(originClass, qualifiedName);
         }

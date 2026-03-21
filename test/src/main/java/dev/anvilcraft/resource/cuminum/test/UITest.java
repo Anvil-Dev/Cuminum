@@ -1,4 +1,4 @@
-package dev.anvilcraft.cuminum.test;
+package dev.anvilcraft.resource.cuminum.test;
 
 import java.util.ArrayList;
 import java.util.List;

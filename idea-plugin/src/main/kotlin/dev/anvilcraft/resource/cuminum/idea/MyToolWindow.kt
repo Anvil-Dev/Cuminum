@@ -1,4 +1,4 @@
-package dev.anvilcraft.cuminum.idea
+package dev.anvilcraft.resource.cuminum.idea
 
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow

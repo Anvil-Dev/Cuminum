@@ -1,4 +1,4 @@
-package dev.anvilcraft.cuminum.idea
+package dev.anvilcraft.resource.cuminum.idea
 
 import com.intellij.psi.*
 import com.intellij.psi.augment.PsiAugmentProvider
@@ -27,7 +27,7 @@ class CodecPsiAugmentProvider : PsiAugmentProvider() {
     }
 
     private fun isAnnotatedWithAutoCodec(psiClass: PsiClass): Boolean {
-        return psiClass.hasAnnotation("dev.anvilcraft.cuminum.AutoCodec")
+        return psiClass.hasAnnotation("dev.anvilcraft.resource.cuminum.AutoCodec")
     }
 
     private fun createCodecField(psiClass: PsiClass): PsiField {

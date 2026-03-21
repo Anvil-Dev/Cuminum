@@ -1,6 +1,6 @@
-package dev.anvilcraft.cuminum.network;
+package dev.anvilcraft.resource.cuminum.network;
 
-import dev.anvilcraft.cuminum.UseCodec;
+import dev.anvilcraft.resource.cuminum.UseCodec;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;

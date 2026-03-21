@@ -1,8 +1,8 @@
-package dev.anvilcraft.cuminum.test;
+package dev.anvilcraft.resource.cuminum.test;
 
-import dev.anvilcraft.cuminum.codec.AutoCodec;
-import dev.anvilcraft.cuminum.codec.CodecField;
-import dev.anvilcraft.cuminum.CodecIgnore;
+import dev.anvilcraft.resource.cuminum.codec.AutoCodec;
+import dev.anvilcraft.resource.cuminum.codec.CodecField;
+import dev.anvilcraft.resource.cuminum.CodecIgnore;
 
 import java.util.List;
 import java.util.Map;

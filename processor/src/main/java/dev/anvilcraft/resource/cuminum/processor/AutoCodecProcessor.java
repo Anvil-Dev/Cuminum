@@ -1,4 +1,4 @@
-package dev.anvilcraft.cuminum.processor;
+package dev.anvilcraft.resource.cuminum.processor;
 
 import com.google.auto.service.AutoService;
 import com.palantir.javapoet.AnnotationSpec;
@@ -9,10 +9,10 @@ import com.palantir.javapoet.JavaFile;
 import com.palantir.javapoet.ParameterizedTypeName;
 import com.palantir.javapoet.TypeName;
 import com.palantir.javapoet.TypeSpec;
-import dev.anvilcraft.cuminum.CodecIgnore;
-import dev.anvilcraft.cuminum.UseCodec;
-import dev.anvilcraft.cuminum.codec.AutoCodec;
-import dev.anvilcraft.cuminum.codec.CodecField;
+import dev.anvilcraft.resource.cuminum.CodecIgnore;
+import dev.anvilcraft.resource.cuminum.UseCodec;
+import dev.anvilcraft.resource.cuminum.codec.AutoCodec;
+import dev.anvilcraft.resource.cuminum.codec.CodecField;
 import org.checkerframework.checker.nullness.qual.NonNull;
 
 import java.io.IOException;
@@ -35,7 +35,7 @@ import javax.lang.model.type.TypeMirror;
 import javax.tools.Diagnostic;
 
 @AutoService(Processor.class)
-@SupportedAnnotationTypes("dev.anvilcraft.cuminum.codec.AutoCodec")
+@SupportedAnnotationTypes("dev.anvilcraft.resource.cuminum.codec.AutoCodec")
 @SupportedSourceVersion(SourceVersion.RELEASE_21)
 public class AutoCodecProcessor extends AbstractProcessor {
     // 定义一些常用的类名，方便 JavaPoet 调用
@@ -136,7 +136,7 @@ public class AutoCodecProcessor extends AbstractProcessor {
 
         // 构建 @Generated 注解
         AnnotationSpec generatedAnnotation = AnnotationSpec.builder(ClassName.get("javax.annotation.processing", "Generated"))
-            .addMember("value", "$S", "dev.anvilcraft.cuminum.processor.AutoCodecProcessor")
+            .addMember("value", "$S", "dev.anvilcraft.resource.cuminum.processor.AutoCodecProcessor")
             .build();
 
         TypeSpec.Builder builder = TypeSpec.classBuilder(generatedClassName)

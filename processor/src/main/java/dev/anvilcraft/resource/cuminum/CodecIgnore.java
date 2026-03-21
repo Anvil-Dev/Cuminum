@@ -1,11 +1,11 @@
-package dev.anvilcraft.cuminum.network;
+package dev.anvilcraft.resource.cuminum;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-@Target(ElementType.TYPE)
+@Target({ElementType.FIELD, ElementType.RECORD_COMPONENT})
 @Retention(RetentionPolicy.SOURCE)
-public @interface AutoStreamCodec {
+public @interface CodecIgnore {
 }
