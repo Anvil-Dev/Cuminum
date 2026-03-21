@@ -1,4 +1,4 @@
-package dev.anvilcraft.cumin;
+package dev.anvilcraft.cuminum;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;

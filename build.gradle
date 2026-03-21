@@ -2,7 +2,7 @@ plugins {
     id 'java'
 }
 
-group = 'dev.anvilcraft.cumin'
+group = 'dev.anvilcraft.cuminum'
 version = '1.0.0'
 
 repositories {

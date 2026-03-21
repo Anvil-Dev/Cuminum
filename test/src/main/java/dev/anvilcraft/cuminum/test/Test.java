@@ -1,4 +1,4 @@
-package dev.anvilcraft.cumin.test;
+package dev.anvilcraft.cuminum.test;
 
 import com.mojang.logging.LogUtils;
 import net.minecraft.client.Minecraft;
@@ -102,6 +102,8 @@ public class Test {
     private void commonSetup(final FMLCommonSetupEvent event) {
         // Some common setup code
         LOGGER.info("HELLO FROM COMMON SETUP");
+        int[] index = {0};
+        index.clone();
 
         if (Config.logDirtBlock) {
             LOGGER.info("DIRT BLOCK >> {}", BuiltInRegistries.BLOCK.getKey(Blocks.DIRT));

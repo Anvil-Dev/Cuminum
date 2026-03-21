@@ -4,8 +4,8 @@ plugins {
     id("org.jetbrains.intellij.platform") version "2.10.2"
 }
 
-group = "dev.anvilcraft.cumin"
-version = "1.0-SNAPSHOT"
+group = "dev.anvilcraft.cuminum"
+version = "1.0.0"
 
 repositories {
     mavenCentral()
@@ -16,6 +16,7 @@ repositories {
 
 // Read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin.html
 dependencies {
+    implementation("com.google.code.findbugs:jsr305:3.0.2")
     intellijPlatform {
         intellijIdea("2025.2.4")
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)

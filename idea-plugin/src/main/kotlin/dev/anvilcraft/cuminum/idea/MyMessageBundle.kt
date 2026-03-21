@@ -1,4 +1,4 @@
-package dev.anvilcraft.cumin.ideaplugin
+package dev.anvilcraft.cuminum.idea
 
 import com.intellij.DynamicBundle
 import org.jetbrains.annotations.Nls

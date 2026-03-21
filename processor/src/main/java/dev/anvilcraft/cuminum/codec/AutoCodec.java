@@ -1,4 +1,4 @@
-package dev.anvilcraft.cumin.codec;
+package dev.anvilcraft.cuminum.codec;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;

@@ -1,4 +1,4 @@
-rootProject.name = 'Cumin'
+rootProject.name = 'Cuminum'
 include 'processor'
 include 'test'
 include 'idea-plugin'

@@ -2,7 +2,7 @@
 
 # Cuminum
 
-<img src=".idea/icon.png" alt="Cumin Logo" style="width: 128px; height: 128px;">
+<img src=".idea/icon.png" alt="Cuminum Logo" style="width: 128px; height: 128px;">
 
 </div>
 
