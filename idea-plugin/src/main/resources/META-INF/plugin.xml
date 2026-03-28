@@ -28,6 +28,17 @@
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="MyToolWindow" factoryClass="dev.anvilcraft.resource.cuminum.idea.MyToolWindowFactory"
                     icon="AllIcons.Toolwindows.ToolWindowPalette"/>
+
+        <!-- PSI 增强提供者：向 @AutoCodec 和 @AutoStreamCodec 类注入生成的字段 -->
         <lang.psiAugmentProvider implementation="dev.anvilcraft.resource.cuminum.idea.CodecPsiAugmentProvider"/>
+
+        <!-- 代码补全提供者：为 Codec 字段提供智能补全 -->
+        <completion.contributor language="JAVA" implementationClass="dev.anvilcraft.resource.cuminum.idea.CodecCompletionContributor"/>
+
+        <!-- 导航处理器：支持跳转到生成的 Codec 字段 -->
+        <gotoDeclarationHandler implementation="dev.anvilcraft.resource.cuminum.idea.CodecNavigationHandler"/>
+
+        <!-- 文档提供者：为 Codec 字段提供快速文档 -->
+        <lang.documentationProvider language="JAVA" implementationClass="dev.anvilcraft.resource.cuminum.idea.CodecDocumentationProvider"/>
     </extensions>
 </idea-plugin>
