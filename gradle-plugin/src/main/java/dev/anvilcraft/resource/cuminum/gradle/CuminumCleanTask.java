@@ -5,7 +5,6 @@ import org.gradle.api.file.DirectoryProperty;
 import org.gradle.api.file.FileSystemOperations;
 import org.gradle.api.tasks.InputDirectory;
 import org.gradle.api.tasks.Optional;
-import org.gradle.api.tasks.OutputDirectory;
 import org.gradle.api.tasks.TaskAction;
 
 import javax.inject.Inject;
@@ -14,7 +13,7 @@ import java.io.File;
 /**
  * 清理 decuminum 编译输出的 .class 文件。
  */
-public abstract class DecuminumCleanTask extends DefaultTask {
+public abstract class CuminumCleanTask extends DefaultTask {
 
     @InputDirectory
     @Optional

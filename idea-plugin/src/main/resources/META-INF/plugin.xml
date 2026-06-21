@@ -30,7 +30,7 @@
                     icon="AllIcons.Toolwindows.ToolWindowPalette"/>
 
         <!-- PSI 增强提供者：向 @AutoCodec 和 @AutoStreamCodec 类注入生成的字段 -->
-        <lang.psiAugmentProvider implementation="dev.anvilcraft.resource.cuminum.idea.CodecPsiAugmentProvider"/>
+        <lang.psiAugmentProvider language="JAVA" implementationClass="dev.anvilcraft.resource.cuminum.idea.CodecPsiAugmentProvider"/>
 
         <!-- 代码补全提供者：为 Codec 字段提供智能补全 -->
         <completion.contributor language="JAVA" implementationClass="dev.anvilcraft.resource.cuminum.idea.CodecCompletionContributor"/>

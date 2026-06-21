@@ -8,10 +8,10 @@ import javax.inject.Inject;
 /**
  * Decuminum 插件的扩展配置
  */
-public abstract class DecuminumExtension {
+public abstract class CuminumExtension {
 
     @Inject
-    public DecuminumExtension(Project project) {
+    public CuminumExtension(Project project) {
         // 默认输出目录: build/decuminum
         getOutputDir().convention(
             project.getLayout().getBuildDirectory().dir("decuminum")

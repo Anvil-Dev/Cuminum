@@ -45,4 +45,8 @@ public record CodecTestClass(
     public String toString() {
         return "CodecTest{" + "test='" + test + '\'' + ", test2=" + test2 + ", test3=" + test3 + ", test4=" + test4 + ", test5=" + test5 + ", test6=" + test6 + ", test7=" + test7 + ", test8=" + test8 + ", test9=" + test9 + ", test10=" + test10 + ", test11=" + test11 + ", test12=" + test12 + ", test13=" + test13 + '}';
     }
+
+    public static void main(String[] args) {
+        CodecTestClass.CODEC;
+    }
 }

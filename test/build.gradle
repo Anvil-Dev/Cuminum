@@ -3,6 +3,7 @@ plugins {
     id 'maven-publish'
     id 'idea'
     id 'net.neoforged.moddev' version '2.0.139'
+    id 'io.freefair.lombok' version '8.7.1'
 }
 
 version = mod_version
@@ -96,13 +97,8 @@ sourceSets.main.resources { srcDir 'src/generated/resources' }
 
 
 dependencies {
-    if (System.getenv("NOT_DEV") == 'true') {
-        implementation project('dev.anvilcraft.resource:cuminum-processor:latest.release')
-        annotationProcessor project('dev.anvilcraft.resource:cuminum-processor:latest.release')
-    } else {
-        implementation project(':cuminum-processor')
-        annotationProcessor project(':cuminum-processor')
-    }
+    implementation('dev.anvilcraft.resource:cuminum-processor:latest.release')
+    annotationProcessor('dev.anvilcraft.resource:cuminum-processor:latest.release')
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.
@@ -134,15 +130,44 @@ sourceSets.main.resources.srcDir generateModMetadata
 neoForge.ideSyncTask generateModMetadata
 
 // Example configuration to allow publishing using the maven-publish plugin
+tasks.register('sourcesJar', Jar) {
+    from delombok.outputs.files
+    dependsOn delombok
+    archiveClassifier = "sources"
+}
+
+artifacts {
+    archives tasks.jar
+    archives tasks.sourcesJar
+}
+
 publishing {
     publications {
-        register('mavenJava', MavenPublication) {
+        mavenJava(MavenPublication) {
+            groupId = project.group
+            artifactId = project.base.archivesName.get()
+            version = project.version
+
             from components.java
+
+            artifact sourcesJar
         }
     }
+
+    // See https://docs.gradle.org/current/userguide/publishing_maven.html for information on how to set up publishing.
     repositories {
-        maven {
-            url "file://${project.projectDir}/repo"
+        // Add repositories to publish to here.
+        def MAVEN_URL = System.getenv("MAVEN_URL")
+        if (MAVEN_URL != null) {
+            maven {
+                url MAVEN_URL
+                credentials {
+                    username System.getenv("MAVEN_USERNAME")
+                    password System.getenv("MAVEN_PASSWORD")
+                }
+            }
+        } else {
+            mavenLocal()
         }
     }
 }
@@ -166,4 +191,8 @@ tasks.withType(JavaCompile).configureEach {
         '--add-exports', 'jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED',
         '--add-exports', 'jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED'
     )
+}
+
+lombok {
+    version = "1.18.44"
 }

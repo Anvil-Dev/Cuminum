@@ -10,16 +10,16 @@ import org.gradle.api.tasks.SourceSetContainer;
  * Gradle 插件：提供 decuminum 任务，实际调用 Cuminum 注解处理器并将生成的源码写出
  * 类似于 Lombok 的 delombok 功能
  */
-public class DecuminumPlugin implements Plugin<Project> {
+public class CuminumPlugin implements Plugin<Project> {
 
     @Override
     public void apply(Project project) {
         project.getPlugins().apply(JavaPlugin.class);
 
-        DecuminumExtension extension = project.getExtensions()
-            .create("decuminum", DecuminumExtension.class, project);
+        CuminumExtension extension = project.getExtensions()
+            .create("decuminum", CuminumExtension.class, project);
 
-        project.getTasks().register("decuminum", DecuminumTask.class, task -> {
+        project.getTasks().register("decuminum", CuminumTask.class, task -> {
             task.setGroup("cuminum");
             task.setDescription("调用 Cuminum 注解处理器并将生成的源码写出（类似 Lombok delombok）");
 
@@ -40,13 +40,13 @@ public class DecuminumPlugin implements Plugin<Project> {
             );
             // 同时把插件自己的 processor jar 也加进去（开发者未必在项目里显式声明了 processor）
             task.getProcessorClasspath().from(
-                DecuminumPlugin.class.getProtectionDomain().getCodeSource().getLocation()
+                CuminumPlugin.class.getProtectionDomain().getCodeSource().getLocation()
             );
 
             task.getOutputDir().set(extension.getOutputDir());
         });
 
-        project.getTasks().register("decuminumClean", DecuminumCleanTask.class, task -> {
+        project.getTasks().register("decuminumClean", CuminumCleanTask.class, task -> {
             task.setGroup("cuminum");
             task.setDescription("清理 decuminum 生成的源码");
             task.getOutputDir().set(extension.getOutputDir());

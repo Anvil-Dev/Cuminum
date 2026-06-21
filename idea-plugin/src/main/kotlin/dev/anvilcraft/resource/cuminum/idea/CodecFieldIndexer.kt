@@ -89,18 +89,6 @@ object CodecFieldIndexer {
         return psiClass.hasAnnotation("dev.anvilcraft.resource.cuminum.network.AutoStreamCodec")
     }
     
-    /**
-     * 获取生成的Codec类的全限定名
-     */
-    fun getGeneratedCodecClassName(psiClass: PsiClass): String {
-        val packageName = (psiClass.containingFile as? PsiJavaFile)?.packageName ?: ""
-        val className = psiClass.name ?: "Unknown"
-        return if (packageName.isEmpty()) {
-            "${className}_CuminCodec"
-        } else {
-            "$packageName.${className}_CuminCodec"
-        }
-    }
 }
 
 /**

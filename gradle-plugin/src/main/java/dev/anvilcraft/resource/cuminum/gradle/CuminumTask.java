@@ -21,7 +21,7 @@ import java.util.List;
  * 因此本任务改为执行完整编译（而非 delombok 式的 -proc:only），
  * 输出的 .class 文件包含注入的字段。</p>
  */
-public abstract class DecuminumTask extends DefaultTask {
+public abstract class CuminumTask extends DefaultTask {
 
     /** 要处理的 Java 源文件根目录（来自 main 源集） */
     @InputFiles

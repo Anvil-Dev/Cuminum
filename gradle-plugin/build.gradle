@@ -1,5 +1,7 @@
 plugins {
     id 'java-gradle-plugin'
+    id 'maven-publish'
+    id 'io.freefair.lombok' version '8.7.1'
 }
 
 group = 'dev.anvilcraft.resource'
@@ -28,10 +30,10 @@ dependencies {
 
 gradlePlugin {
     plugins {
-        decuminumPlugin {
-            id = 'dev.anvilcraft.resource.decuminum'
-            implementationClass = 'dev.anvilcraft.resource.cuminum.gradle.DecuminumPlugin'
-            displayName = 'Decuminum Gradle Plugin'
+        cuminumPlugin {
+            id = 'dev.anvilcraft.resource.cuminum'
+            implementationClass = 'dev.anvilcraft.resource.cuminum.gradle.CuminumPlugin'
+            displayName = 'Cuminum Gradle Plugin'
             description = 'Gradle plugin to run Cuminum annotation processor and expose generated sources, similar to Lombok\'s delombok'
         }
     }
@@ -54,4 +56,50 @@ tasks.withType(JavaCompile).configureEach {
         '--add-exports', 'jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED',
         '--add-exports', 'jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED'
     )
+}
+
+tasks.register('sourcesJar', Jar) {
+    from delombok.outputs.files
+    dependsOn delombok
+    archiveClassifier = "sources"
+}
+
+artifacts {
+    archives tasks.jar
+    archives tasks.sourcesJar
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            groupId = project.group
+            artifactId = project.base.archivesName.get()
+            version = project.version
+
+            from components.java
+
+            artifact sourcesJar
+        }
+    }
+
+    // See https://docs.gradle.org/current/userguide/publishing_maven.html for information on how to set up publishing.
+    repositories {
+        // Add repositories to publish to here.
+        def MAVEN_URL = System.getenv("MAVEN_URL")
+        if (MAVEN_URL != null) {
+            maven {
+                url MAVEN_URL
+                credentials {
+                    username System.getenv("MAVEN_USERNAME")
+                    password System.getenv("MAVEN_PASSWORD")
+                }
+            }
+        } else {
+            mavenLocal()
+        }
+    }
+}
+
+lombok {
+    version = "1.18.44"
 }
