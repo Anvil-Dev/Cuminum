@@ -1,25 +1,32 @@
 package dev.anvilcraft.resource.cuminum.gradle;
 
+import com.sun.source.util.JavacTask;
+import com.sun.source.util.TaskEvent;
+import com.sun.source.util.TaskListener;
+import com.sun.tools.javac.tree.JCTree;
+import com.sun.tools.javac.tree.JCTree.JCClassDecl;
+import com.sun.tools.javac.tree.JCTree.JCCompilationUnit;
+import com.sun.tools.javac.tree.Pretty;
 import org.gradle.api.DefaultTask;
 import org.gradle.api.file.ConfigurableFileCollection;
 import org.gradle.api.file.DirectoryProperty;
 import org.gradle.api.tasks.*;
 
 import javax.tools.*;
-import java.io.File;
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.io.StringWriter;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * 调用 Cuminum 注解处理器并将编译后的 .class 文件写出到 outputDir。
+ * 调用 Cuminum 注解处理器，将处理后的 AST 以 .java 源文件形式写出到
+ * outputDir，类似 Lombok 的 delombok 功能。
  *
- * <p>Cuminum 使用 Lombok 风格的 AST 注入方式，直接在注解所在类中生成
- * {@code CODEC} / {@code MAP_CODEC} 字段，不产生额外的源文件。
- * 因此本任务改为执行完整编译（而非 delombok 式的 -proc:only），
- * 输出的 .class 文件包含注入的字段。</p>
+ * <p>使用 javac 的 {@code -proc:only} 模式仅运行注解处理，
+ * 然后通过 javac 内部的 {@link Pretty} 打印机将修改后的 AST
+ * 还原为有效的 Java 源代码。</p>
  */
 public abstract class CuminumTask extends DefaultTask {
 
@@ -39,7 +46,7 @@ public abstract class CuminumTask extends DefaultTask {
     @Classpath
     public abstract ConfigurableFileCollection getProcessorClasspath();
 
-    /** 编译输出目录（.class 文件），默认 build/decuminum */
+    /** 输出目录（.java 源文件），默认 build/generated/sources/decuminum */
     @OutputDirectory
     public abstract DirectoryProperty getOutputDir();
 
@@ -68,30 +75,25 @@ public abstract class CuminumTask extends DefaultTask {
         }
 
         // ── 4. 组装编译选项 ──────────────────────────────────────────────
-        //  正常的完整编译（含注解处理），Cuminum 会在 AST 中注入字段
-        //  -d <dir>            编译后的 .class 文件写到此目录
-        //  -implicit:none      不隐式编译被引用的类
-        //  -cp / -processorpath 指定两段类路径
         List<String> options = new ArrayList<>();
+        options.add("-proc:only");
         options.add("-implicit:none");
-        options.add("-d");
-        options.add(outputDir.getAbsolutePath());
 
-        // javac 需要访问内部模块的 --add-exports
-        options.add("--add-exports");
-        options.add("jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED");
-        options.add("--add-exports");
-        options.add("jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED");
-        options.add("--add-exports");
-        options.add("jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED");
-        options.add("--add-exports");
-        options.add("jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED");
-        options.add("--add-exports");
-        options.add("jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED");
-        options.add("--add-exports");
-        options.add("jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED");
-        options.add("--add-exports");
-        options.add("jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED");
+        // --add-exports 让 javac 内部的注解处理器能访问 jdk.compiler 内部 API
+        String[] addExports = {
+            "jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+            "jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED",
+            "jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED",
+            "jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED",
+            "jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED",
+            "jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED",
+            "jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED",
+            "jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED",
+        };
+        for (String exp : addExports) {
+            options.add("--add-exports");
+            options.add(exp);
+        }
 
         String cp = getCompileClasspath().getAsPath();
         if (!cp.isEmpty()) {
@@ -105,34 +107,92 @@ public abstract class CuminumTask extends DefaultTask {
             options.add(procPath);
         }
 
-        // ── 5. 执行编译 ──────────────────────────────────────────────────
+        // ── 5. 执行编译（仅注解处理） ────────────────────────────────────
         DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
         StringWriter extraOutput = new StringWriter();
 
-        try (StandardJavaFileManager fm = compiler.getStandardFileManager(diagnostics, null, null)) {
-            Iterable<? extends JavaFileObject> units =
+        // 捕获注解处理后的 AST
+        Map<String, JCCompilationUnit> capturedUnits = new LinkedHashMap<>();
+
+        try (StandardJavaFileManager fm =
+                 compiler.getStandardFileManager(diagnostics, null, null)) {
+
+            Iterable<? extends JavaFileObject> fileObjects =
                 fm.getJavaFileObjects(sourceFiles.toArray(new File[0]));
 
-            JavaCompiler.CompilationTask task =
-                compiler.getTask(new PrintWriter(extraOutput), fm, diagnostics, options, null, units);
+            JavaCompiler.CompilationTask task = compiler.getTask(
+                new PrintWriter(extraOutput), fm, diagnostics,
+                options, null, fileObjects);
+
+            // 注册 TaskListener 在注解处理完成后捕获修改过的编译单元
+            if (task instanceof JavacTask javacTask) {
+                javacTask.addTaskListener(new TaskListener() {
+                    @Override
+                    public void started(TaskEvent e) {}
+
+                    @Override
+                    public void finished(TaskEvent e) {
+                        if (e.getKind() == TaskEvent.Kind.ANNOTATION_PROCESSING
+                            && e.getCompilationUnit() instanceof JCCompilationUnit jcUnit
+                            && jcUnit.sourcefile != null) {
+                            capturedUnits.put(jcUnit.sourcefile.getName(), jcUnit);
+                        }
+                    }
+                });
+            }
 
             task.call();
         }
 
-        // ── 6. 汇报诊断信息 ──────────────────────────────────────────────
+        // ── 6. 将修改后的 AST 以 Pretty 打印机写回 .java 文件 ───────────
+        int fileCount = 0;
+        for (JCCompilationUnit jcUnit : capturedUnits.values()) {
+            // 找到顶层类
+            JCClassDecl classDecl = null;
+            for (JCTree def : jcUnit.defs) {
+                if (def instanceof JCClassDecl cd) {
+                    classDecl = cd;
+                    break;
+                }
+            }
+            if (classDecl == null) continue;
+
+            // 计算输出路径
+            String packageName = jcUnit.packge != null
+                ? jcUnit.packge.fullname.toString()
+                : "";
+            String className = classDecl.name.toString();
+            String relativePath = packageName.isEmpty()
+                ? className + ".java"
+                : packageName.replace('.', '/') + "/" + className + ".java";
+            File outFile = new File(outputDir, relativePath);
+            outFile.getParentFile().mkdirs();
+
+            // Pretty-print
+            try (PrintWriter pw = new PrintWriter(
+                     new OutputStreamWriter(
+                         new FileOutputStream(outFile), StandardCharsets.UTF_8))) {
+                Pretty pretty = new Pretty(pw, true);
+                for (JCTree def : jcUnit.defs) {
+                    pretty.printStat(def);
+                }
+                pw.flush();
+                fileCount++;
+            }
+        }
+
+        // ── 7. 汇报诊断信息 ──────────────────────────────────────────────
         int errorCount = 0;
         for (Diagnostic<? extends JavaFileObject> d : diagnostics.getDiagnostics()) {
             String msg = d.getMessage(null);
             switch (d.getKind()) {
-                case ERROR:
+                case ERROR -> {
                     getLogger().error("[decuminum] {}", msg);
                     errorCount++;
-                    break;
-                case WARNING:
-                case MANDATORY_WARNING:
+                }
+                case WARNING, MANDATORY_WARNING ->
                     getLogger().warn("[decuminum] {}", msg);
-                    break;
-                default:
+                default ->
                     getLogger().info("[decuminum] {}", msg);
             }
         }
@@ -141,13 +201,11 @@ public abstract class CuminumTask extends DefaultTask {
             getLogger().info("[decuminum] javac output: {}", extra);
         }
 
-        // ── 7. 输出结果 ──────────────────────────────────────────────────
-        int classCount = countClassFiles(outputDir);
         if (errorCount > 0) {
             getLogger().warn("[decuminum] 完成，但存在 {} 个编译错误", errorCount);
         }
-        getLogger().lifecycle("[decuminum] ✅ 完成，共编译 {} 个 .class 文件 → {}",
-            classCount, outputDir.getAbsolutePath());
+        getLogger().lifecycle("[decuminum] ✅ 完成，共生成 {} 个 .java 文件 → {}",
+            fileCount, outputDir.getAbsolutePath());
     }
 
     // ── 工具方法 ──────────────────────────────────────────────────────────
@@ -163,17 +221,5 @@ public abstract class CuminumTask extends DefaultTask {
                 result.add(f);
             }
         }
-    }
-
-    private int countClassFiles(File dir) {
-        if (dir == null || !dir.isDirectory()) return 0;
-        int count = 0;
-        File[] children = dir.listFiles();
-        if (children == null) return count;
-        for (File f : children) {
-            if (f.isDirectory()) count += countClassFiles(f);
-            else if (f.getName().endsWith(".class")) count++;
-        }
-        return count;
     }
 }

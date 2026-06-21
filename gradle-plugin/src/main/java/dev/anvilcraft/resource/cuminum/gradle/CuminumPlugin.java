@@ -17,34 +17,41 @@ public class CuminumPlugin implements Plugin<Project> {
         project.getPlugins().apply(JavaPlugin.class);
 
         CuminumExtension extension = project.getExtensions()
-            .create("decuminum", CuminumExtension.class, project);
+            .create("cuminum", CuminumExtension.class, project);
+
+        // Automatically add cuminum-processor dependency
+        project.afterEvaluate(p -> {
+            String version = extension.getVersion().getOrElse("1.0.0");
+            String notation = "dev.anvilcraft.resource:cuminum-processor:" + version;
+            p.getDependencies().add("implementation", notation);
+            p.getDependencies().add("annotationProcessor", notation);
+        });
 
         project.getTasks().register("decuminum", CuminumTask.class, task -> {
             task.setGroup("cuminum");
-            task.setDescription("调用 Cuminum 注解处理器并将生成的源码写出（类似 Lombok delombok）");
+            task.setDescription("调用 Cuminum 注解处理器并将生成的源文件写出（类似 Lombok delombok）");
 
             SourceSetContainer sourceSets = project.getExtensions()
                 .getByType(SourceSetContainer.class);
             SourceSet main = sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME);
 
-            // 主源集的 Java 源文件目录
             task.getSourceDirs().from(main.getJava().getSourceDirectories());
 
-            // 编译类路径（用于让处理器能解析用到的类）
             task.getCompileClasspath().from(main.getCompileClasspath());
 
-            // 注解处理器类路径（annotationProcessor 配置 + 插件自身携带的 processor）
             task.getProcessorClasspath().from(
                 project.getConfigurations()
                     .getByName(JavaPlugin.ANNOTATION_PROCESSOR_CONFIGURATION_NAME)
             );
-            // 同时把插件自己的 processor jar 也加进去（开发者未必在项目里显式声明了 processor）
-            task.getProcessorClasspath().from(
-                CuminumPlugin.class.getProtectionDomain().getCodeSource().getLocation()
-            );
 
             task.getOutputDir().set(extension.getOutputDir());
         });
+
+        // Register generated .java sources into the main source set
+        SourceSetContainer sourceSets = project.getExtensions()
+            .getByType(SourceSetContainer.class);
+        SourceSet main = sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME);
+        main.getJava().srcDir(extension.getOutputDir());
 
         project.getTasks().register("decuminumClean", CuminumCleanTask.class, task -> {
             task.setGroup("cuminum");
