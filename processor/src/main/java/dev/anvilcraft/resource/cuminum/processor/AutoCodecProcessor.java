@@ -1,24 +1,25 @@
 package dev.anvilcraft.resource.cuminum.processor;
 
 import com.google.auto.service.AutoService;
-import com.palantir.javapoet.AnnotationSpec;
-import com.palantir.javapoet.ClassName;
-import com.palantir.javapoet.CodeBlock;
-import com.palantir.javapoet.FieldSpec;
-import com.palantir.javapoet.JavaFile;
-import com.palantir.javapoet.ParameterizedTypeName;
-import com.palantir.javapoet.TypeName;
-import com.palantir.javapoet.TypeSpec;
+import com.sun.tools.javac.api.JavacTrees;
+import com.sun.tools.javac.code.Symbol;
+import com.sun.tools.javac.parser.ParserFactory;
+import com.sun.tools.javac.processing.JavacProcessingEnvironment;
+import com.sun.tools.javac.tree.JCTree;
+import com.sun.tools.javac.tree.JCTree.JCClassDecl;
+import com.sun.tools.javac.tree.JCTree.JCCompilationUnit;
+import com.sun.tools.javac.tree.JCTree.JCExpression;
+import com.sun.tools.javac.tree.JCTree.JCImport;
+import com.sun.tools.javac.tree.JCTree.JCVariableDecl;
+import com.sun.tools.javac.tree.TreeMaker;
+import com.sun.tools.javac.util.Context;
+import com.sun.tools.javac.util.Names;
 import dev.anvilcraft.resource.cuminum.CodecIgnore;
 import dev.anvilcraft.resource.cuminum.UseCodec;
 import dev.anvilcraft.resource.cuminum.codec.AutoCodec;
 import dev.anvilcraft.resource.cuminum.codec.CodecField;
 import org.checkerframework.checker.nullness.qual.NonNull;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Processor;
 import javax.annotation.processing.RoundEnvironment;
@@ -33,273 +34,504 @@ import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.MirroredTypeException;
 import javax.lang.model.type.TypeMirror;
 import javax.tools.Diagnostic;
+import javax.tools.JavaFileObject;
+import javax.tools.SimpleJavaFileObject;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 
+/**
+ * Annotation processor that injects {@code CODEC}, {@code MAP_CODEC} fields
+ * directly into classes annotated with {@link AutoCodec} — Lombok-style.
+ *
+ * <p><b>Strategy</b>: generate the field source code as a string, parse it with
+ * javac's own parser (which correctly handles type attribution), then inject the
+ * resulting {@link JCVariableDecl} nodes into the target class's AST. This avoids
+ * the type-inference issues that arise from manually constructing generic-heavy
+ * {@code RecordCodecBuilder} chains with raw {@link TreeMaker} nodes.</p>
+ */
 @AutoService(Processor.class)
 @SupportedAnnotationTypes("dev.anvilcraft.resource.cuminum.codec.AutoCodec")
 @SupportedSourceVersion(SourceVersion.RELEASE_21)
 public class AutoCodecProcessor extends AbstractProcessor {
-    // 定义一些常用的类名，方便 JavaPoet 调用
-    private static final ClassName CODEC = ClassName.get("com.mojang.serialization", "Codec");
-    private static final ClassName MAP_CODEC = ClassName.get("com.mojang.serialization", "MapCodec");
-    private static final ClassName RECORD_CODEC_BUILDER = ClassName.get("com.mojang.serialization.codecs", "RecordCodecBuilder");
+
+    // ── javac internals (lazy-init) ──────────────────────────────────────
+    private JavacTrees trees;
+    private TreeMaker maker;
+    private Names names;
+    private AstHelper ast;
+    private ParserFactory parserFactory;
+
+    // ── Entry point ─────────────────────────────────────────────────────
+
+    @Override
+    public synchronized void init(javax.annotation.processing.ProcessingEnvironment processingEnv) {
+        super.init(processingEnv);
+        JavaWorkaround.init();
+    }
 
     @Override
     public boolean process(Set<? extends TypeElement> annotations, @NonNull RoundEnvironment roundEnv) {
+        if (roundEnv.processingOver()) return false;
+
+        if (trees == null) initJavacInternals();
+        if (trees == null) return false;
+
         for (Element element : roundEnv.getElementsAnnotatedWith(AutoCodec.class)) {
             AutoCodec annotation = element.getAnnotation(AutoCodec.class);
             if (element.getKind() == ElementKind.CLASS || element.getKind() == ElementKind.RECORD) {
                 try {
-                    generateCodec((TypeElement) element, annotation != null ? annotation.value() : AutoCodec.CodecType.CODEC);
+                    injectCodecFields(
+                        (TypeElement) element,
+                        annotation != null ? annotation.value() : AutoCodec.CodecType.CODEC
+                    );
                 } catch (Exception e) {
-                    processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, "Cuminum 编译失败: " + e.getMessage());
-                    for (StackTraceElement stackTraceElement : e.getStackTrace()) {
-                        processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, stackTraceElement.toString());
-                    }
+                    StringWriter sw = new StringWriter();
+                    e.printStackTrace(new PrintWriter(sw));
+                    processingEnv.getMessager().printMessage(
+                        Diagnostic.Kind.ERROR,
+                        "Cuminum: failed for " + element + ": " + e + "\n" + sw
+                    );
                 }
             }
         }
         return true;
     }
 
-    private void generateCodec(TypeElement typeElement, AutoCodec.CodecType codecType) throws IOException {
-        String packageName = processingEnv.getElementUtils().getPackageOf(typeElement).getQualifiedName().toString();
+    // ── Javac internals init ────────────────────────────────────────────
+
+    private void initJavacInternals() {
+        try {
+            Context context = getJavacContext();
+            trees = JavacTrees.instance(context);
+            maker = TreeMaker.instance(context);
+            names = Names.instance(context);
+            ast = new AstHelper(maker, names);
+            parserFactory = ParserFactory.instance(context);
+            processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE,
+                "Cuminum: javac internals initialized successfully");
+        } catch (Exception e) {
+            processingEnv.getMessager().printMessage(
+                Diagnostic.Kind.WARNING,
+                "Cuminum: cannot access javac internals. Error: " + e.getMessage()
+            );
+        }
+    }
+
+    private Context getJavacContext() {
+        if (processingEnv instanceof JavacProcessingEnvironment jpe) {
+            return jpe.getContext();
+        }
+        try {
+            var field = processingEnv.getClass().getDeclaredField("context");
+            field.setAccessible(true);
+            return (Context) field.get(processingEnv);
+        } catch (Exception e) {
+            throw new RuntimeException("Not running on javac", e);
+        }
+    }
+
+    // ── Core injection logic ────────────────────────────────────────────
+
+    private void injectCodecFields(TypeElement typeElement, AutoCodec.CodecType codecType) {
+        if (!(typeElement instanceof Symbol.ClassSymbol classSymbol)) {
+            processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE,
+                "Cuminum: not a ClassSymbol: " + typeElement);
+            return;
+        }
+
+        JCClassDecl classDecl = (JCClassDecl) trees.getTree(classSymbol);
+        if (classDecl == null) {
+            processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE,
+                "Cuminum: null classDecl for " + typeElement.getQualifiedName());
+            return;
+        }
+
+        // Duplicate guard
+        boolean hasCodec = false, hasMapCodec = false;
+        for (JCTree def : classDecl.defs) {
+            if (def instanceof JCVariableDecl vd) {
+                if (vd.name.contentEquals("CODEC")) hasCodec = true;
+                if (vd.name.contentEquals("MAP_CODEC")) hasMapCodec = true;
+            }
+        }
+
+        String packageName = processingEnv.getElementUtils()
+            .getPackageOf(typeElement).getQualifiedName().toString();
         String className = typeElement.getSimpleName().toString();
-
-        // 生成的辅助类名，例如 MyData_CuminCodec
-        String generatedClassName = className + "$CuminCodec";
-
-        List<CodeBlock> fieldBlocks = new ArrayList<>();
         boolean isRecord = typeElement.getKind() == ElementKind.RECORD;
 
-        // 获取成员：如果是 record 则遍历组件，否则遍历字段
-        List<? extends Element> members = isRecord ? typeElement.getRecordComponents() : typeElement.getEnclosedElements();
-
-        for (Element member : members) {
-            // 过滤非字段成员（针对普通类）
-            if (!isRecord && member.getKind() != ElementKind.FIELD) continue;
-
-            // 过滤 static 和 @CodecIgnore
-            if (member.getModifiers().contains(Modifier.STATIC) || member.getAnnotation(CodecIgnore.class) != null) {
-                continue;
-            }
-
-            // 类型信息（如果是 RecordComponent，则需要转为其对应的类型）
-            TypeMirror typeMirror = member.asType();
-            String fieldName = member.getSimpleName().toString();
-
-            // 1. 获取 JSON 键名
-            CodecField anno = member.getAnnotation(CodecField.class);
-            String jsonKey = (anno != null && !anno.value().isEmpty()) ? anno.value() : fieldName;
-
-            // 2. 处理容器类型 (List, Optional, Map - 复用之前的逻辑)
-            // 确定 Codec 引用 (逻辑优先级：手动指定 > 自动识别)
-            CodeBlock codecRef = null;
-            boolean back = false;
-            if (anno != null && (anno.codec() instanceof UseCodec useCodec)) {
-                // 如果用户手动指定了 codec 表达式，直接作为 Literal 写入
-                String canonicalName;
-                try {
-                    Class<?> clazz = useCodec.value();
-                    canonicalName = clazz.getCanonicalName();
-                } catch (MirroredTypeException e) {
-                    TypeMirror mirror = e.getTypeMirror();
-                    canonicalName = mirror.toString();
-                }
-                if (!canonicalName.isEmpty() && !canonicalName.equals("java.lang.Void")) {
-                    String memberName = useCodec.member().isEmpty() ? "CODEC" : useCodec.member();
-                    codecRef = CodeBlock.of("$L", canonicalName + "." + memberName);
-                }
-            } else {
-                // 否则走之前的自动递归解析逻辑
-                codecRef = resolveCodec(typeMirror);
-            }
-            if (codecRef == null) codecRef = resolveCodec(typeMirror);
-            // 3. 核心：获取 Getter 引用
-            CodeBlock getterExpr = getGetterExpression(typeElement, member, isRecord);
-
-            // 4. 处理可选/可为空逻辑
-            boolean isOptionalType = isRawTypeString(typeMirror, "java.util.Optional");
-            boolean isNullable = hasNullableAnnotation(member);
-
-            if (isOptionalType) {
-                // 场景 A: 字段类型本身就是 Optional<T>
-                fieldBlocks.add(CodeBlock.of("$L.optionalFieldOf($S).forGetter($L)", codecRef, jsonKey, getterExpr));
-            } else if (isNullable) {
-                // 场景 B: 字段标记了 @Nullable T
-                // 使用 optionalFieldOf(key, defaultValue) 的重载，将 null 作为默认值
-                fieldBlocks.add(CodeBlock.of("$L.optionalFieldOf($S, null).forGetter($L)", codecRef, jsonKey, getterExpr));
-            } else {
-                // 场景 C: 普通必填字段
-                fieldBlocks.add(CodeBlock.of("$L.fieldOf($S).forGetter($L)", codecRef, jsonKey, getterExpr));
-            }
+        // Build source code for the fields, parse, and inject
+        String source = generateFieldSource(packageName, className, typeElement,
+            codecType, isRecord);
+        if (source.isEmpty()) {
+            processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE,
+                "Cuminum: empty source for " + className);
+            return;
         }
 
-        // 构建 @Generated 注解
-        AnnotationSpec generatedAnnotation = AnnotationSpec.builder(ClassName.get("javax.annotation.processing", "Generated"))
-            .addMember("value", "$S", "dev.anvilcraft.resource.cuminum.processor.AutoCodecProcessor")
-            .build();
+        JCCompilationUnit parsed = parseSource(source);
+        if (parsed == null) return;
 
-        TypeSpec.Builder builder = TypeSpec.classBuilder(generatedClassName)
-            .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
-            .addAnnotation(generatedAnnotation);
+        // Add necessary imports to the target class's compilation unit.
+        // The injected fields reference Codec/MapCodec/RecordCodecBuilder
+        // by simple name, so the target must import them.
+        ensureImports(classSymbol);
+
+        // Extract the generated wrapper class, then its fields, and inject.
+        // CRITICAL: reset all node positions to NOPOS (-1) so javac doesn't
+        // map them back to wrong locations in the original source file.
+        for (JCTree topDef : parsed.defs) {
+            if (topDef instanceof JCClassDecl wrapperClass) {
+                for (JCTree member : wrapperClass.defs) {
+                    if (member instanceof JCVariableDecl vd) {
+                        String name = vd.name.toString();
+                        if ("CODEC".equals(name) && hasCodec) continue;
+                        if ("MAP_CODEC".equals(name) && hasMapCodec) continue;
+                        // Don't reset positions — parsed nodes carry correct
+                        // type attribution from javac's own parser.
+                        classDecl.defs = classDecl.defs.append(vd);
+                        processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE,
+                            "Cuminum: injected " + name + " into " + className);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Source code generation ──────────────────────────────────────────
+
+    /**
+     * Generate a complete Java class source string containing only the
+     * CODEC/MAP_CODEC fields. This is parsed by javac to get properly
+     * attributed AST nodes.
+     */
+    private String generateFieldSource(String pkg, String className,
+                                        TypeElement typeElement,
+                                        AutoCodec.CodecType codecType,
+                                        boolean isRecord) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("package ").append(pkg).append(";\n");
+        sb.append("import com.mojang.serialization.Codec;\n");
+        sb.append("import com.mojang.serialization.MapCodec;\n");
+        sb.append("import com.mojang.serialization.codecs.RecordCodecBuilder;\n");
+        sb.append("public final class _CuminumGen_").append(className).append(" {\n");
+
+        // Generate field blocks source
+        String fieldBlocks = generateFieldBlocksSource(typeElement, className, isRecord);
+        if (fieldBlocks.isEmpty()) return "";
+
         if (codecType == AutoCodec.CodecType.CODEC) {
-            CodeBlock codecInitBlock = CodeBlock.builder()
-                .add("$T.create(instance -> instance.group(\n", RECORD_CODEC_BUILDER)
-                .indent()
-                .add(CodeBlock.join(fieldBlocks, ",\n"))
-                .unindent()
-                .add("\n).apply(instance, $T::new))", typeElement) // 这里调用构造函数
-                .build();
-            FieldSpec instanceField = FieldSpec.builder(
-                ParameterizedTypeName.get(CODEC, TypeName.get(typeElement.asType())),
-                "CODEC",
-                Modifier.PUBLIC,
-                Modifier.STATIC,
-                Modifier.FINAL
-            ).initializer(codecInitBlock).build();
-            builder.addField(instanceField);
+            sb.append("  public static final Codec<").append(className)
+                .append("> CODEC = RecordCodecBuilder.create(instance -> instance.group(\n");
+            sb.append(fieldBlocks);
+            sb.append("  ).apply(instance, ").append(className).append("::new));\n");
         } else {
-            CodeBlock mapCodecInitBlock = CodeBlock.builder()
-                .add("$T.mapCodec(instance -> instance.group(\n", RECORD_CODEC_BUILDER)
-                .indent()
-                .add(CodeBlock.join(fieldBlocks, ",\n"))
-                .unindent()
-                .add("\n).apply(instance, $T::new))", typeElement) // 这里调用构造函数
-                .build();
-            FieldSpec mapCodecInstanceField = FieldSpec.builder(
-                ParameterizedTypeName.get(MAP_CODEC, TypeName.get(typeElement.asType())),
-                "MAP_CODEC",
-                Modifier.PUBLIC,
-                Modifier.STATIC,
-                Modifier.FINAL
-            ).initializer(mapCodecInitBlock).build();
-            builder.addField(mapCodecInstanceField);
+            sb.append("  public static final MapCodec<").append(className)
+                .append("> MAP_CODEC = RecordCodecBuilder.mapCodec(instance -> instance.group(\n");
+            sb.append(fieldBlocks);
+            sb.append("  ).apply(instance, ").append(className).append("::new));\n");
             if (codecType == AutoCodec.CodecType.BOTH) {
-                CodeBlock codecInitBlock = CodeBlock.builder()
-                    .add("MAP_CODEC.codec()")
-                    .build();
-                FieldSpec instanceField = FieldSpec.builder(
-                    ParameterizedTypeName.get(CODEC, TypeName.get(typeElement.asType())),
-                    "CODEC",
-                    Modifier.PUBLIC,
-                    Modifier.STATIC,
-                    Modifier.FINAL
-                ).initializer(codecInitBlock).build();
-                builder.addField(instanceField);
+                sb.append("  public static final Codec<").append(className)
+                    .append("> CODEC = MAP_CODEC.codec();\n");
             }
         }
-        TypeSpec codecClass = builder.addJavadoc("Generated by Cuminum. Do not modify.\n").build();
-        JavaFile.builder(packageName, codecClass).build().writeTo(processingEnv.getFiler());
+
+        sb.append("}\n");
+        return sb.toString();
     }
 
     /**
-     * 检查 TypeMirror 是否属于某个特定的原始类型（如 java.util.List）
+     * Generate the comma-separated field blocks for the {@code group()} call.
      */
-    private boolean isRawTypeString(TypeMirror type, String rawTypeCanonicalName) {
-        if (type instanceof javax.lang.model.type.DeclaredType declaredType) {
+    private String generateFieldBlocksSource(TypeElement typeElement,
+                                              String className, boolean isRecord) {
+        StringBuilder sb = new StringBuilder();
+        List<? extends Element> members = isRecord
+            ? typeElement.getRecordComponents()
+            : typeElement.getEnclosedElements();
+
+        boolean first = true;
+        for (Element member : members) {
+            if (!isRecord && member.getKind() != ElementKind.FIELD) continue;
+            if (member.getModifiers().contains(Modifier.STATIC)) continue;
+            if (member.getAnnotation(CodecIgnore.class) != null) continue;
+
+            TypeMirror typeMirror = member.asType();
+            String fieldName = member.getSimpleName().toString();
+
+            // JSON key
+            CodecField anno = member.getAnnotation(CodecField.class);
+            String jsonKey = (anno != null && !anno.value().isEmpty())
+                ? anno.value() : fieldName;
+
+            // Codec reference source
+            String codecRef;
+            if (anno != null && (anno.codec() instanceof UseCodec useCodec)) {
+                codecRef = resolveUseCodecSource(useCodec);
+                if (codecRef == null) codecRef = resolveCodecSource(typeMirror);
+            } else {
+                codecRef = resolveCodecSource(typeMirror);
+            }
+
+            // Getter source
+            String getter = buildGetterSource(className, member, isRecord);
+
+            // Build the chain
+            boolean isOptionalType = isRawTypeString(typeMirror, "java.util.Optional");
+            boolean isNullable = hasNullableAnnotation(member);
+
+            if (!first) sb.append(",\n");
+            first = false;
+
+            if (isOptionalType) {
+                sb.append("    ").append(codecRef)
+                    .append(".optionalFieldOf(\"").append(jsonKey).append("\")");
+            } else if (isNullable) {
+                sb.append("    ").append(codecRef)
+                    .append(".optionalFieldOf(\"").append(jsonKey).append("\", null)");
+            } else {
+                sb.append("    ").append(codecRef)
+                    .append(".fieldOf(\"").append(jsonKey).append("\")");
+            }
+            sb.append(".forGetter(").append(getter).append(")");
+        }
+
+        if (!first) sb.append("\n");
+        return sb.toString();
+    }
+
+    // ── Getter source ───────────────────────────────────────────────────
+
+    private String buildGetterSource(String className, Element member,
+                                      boolean isRecord) {
+        String fieldName = member.getSimpleName().toString();
+
+        if (isRecord) {
+            return className + "::" + fieldName;
+        }
+
+        if (!member.getModifiers().contains(Modifier.PRIVATE)) {
+            // Public/package-private field → obj -> obj.field
+            return "obj -> obj." + fieldName;
+        }
+
+        // Private field → assume getter
+        String prefix = member.asType().getKind().name().equals("BOOLEAN")
+            ? "is" : "get";
+        String getterName = prefix + capitalize(fieldName);
+        return className + "::" + getterName;
+    }
+
+    // ── Codec source resolver ───────────────────────────────────────────
+
+    private String resolveUseCodecSource(UseCodec useCodec) {
+        String canonicalName;
+        try {
+            canonicalName = useCodec.value().getCanonicalName();
+        } catch (MirroredTypeException e) {
+            canonicalName = e.getTypeMirror().toString();
+        }
+        if (canonicalName.isEmpty() || canonicalName.equals("java.lang.Void")) {
+            return null;
+        }
+        String memberName = useCodec.member().isEmpty() ? "CODEC" : useCodec.member();
+        return canonicalName + "." + memberName;
+    }
+
+    private String resolveCodecSource(TypeMirror type) {
+        if (isRawTypeString(type, "java.util.Optional")) {
+            return resolveCodecSource(getGenericArgument(type, 0));
+        }
+        if (isRawTypeString(type, "java.util.List")) {
+            return resolveCodecSource(getGenericArgument(type, 0)) + ".listOf()";
+        }
+        if (isRawTypeString(type, "java.util.Map")) {
+            String keyCodec = resolveCodecSource(getGenericArgument(type, 0));
+            String valueCodec = resolveCodecSource(getGenericArgument(type, 1));
+            return "Codec.unboundedMap(" + keyCodec + ", " + valueCodec + ")";
+        }
+
+        String typeStr = type.toString();
+        return switch (typeStr) {
+            case "byte", "java.lang.Byte"       -> "Codec.BYTE";
+            case "short", "java.lang.Short"     -> "Codec.SHORT";
+            case "char", "java.lang.Character"  -> "Codec.CHAR";
+            case "int", "java.lang.Integer"     -> "Codec.INT";
+            case "long", "java.lang.Long"       -> "Codec.LONG";
+            case "float", "java.lang.Float"     -> "Codec.FLOAT";
+            case "double", "java.lang.Double"   -> "Codec.DOUBLE";
+            case "boolean", "java.lang.Boolean" -> "Codec.BOOL";
+            case "java.lang.String"             -> "Codec.STRING";
+            case "net.minecraft.core.BlockPos"  -> "net.minecraft.core.BlockPos.CODEC";
+            default -> resolveCodecSourceFallback(type);
+        };
+    }
+
+    private String resolveCodecSourceFallback(TypeMirror type) {
+        Element element = processingEnv.getTypeUtils().asElement(type);
+        if (element != null && element.getAnnotation(AutoCodec.class) != null) {
+            String pkg = processingEnv.getElementUtils()
+                .getPackageOf(element).getQualifiedName().toString();
+            String name = element.getSimpleName().toString();
+            String fqn = pkg.isEmpty() ? name : pkg + "." + name;
+            return fqn + ".CODEC";
+        }
+        if (type instanceof DeclaredType dt) {
+            Element elem = dt.asElement();
+            if (elem instanceof TypeElement te) {
+                return te.getQualifiedName() + ".CODEC";
+            }
+        }
+        return type.toString() + ".CODEC";
+    }
+
+    // ── Source parsing ──────────────────────────────────────────────────
+
+    /**
+     * Parse a Java source string into a {@link JCCompilationUnit}.
+     * The returned AST is fully attributed by javac.
+     */
+    private JCCompilationUnit parseSource(String source) {
+        try {
+            JavaFileObject fileObject = new SimpleJavaFileObject(
+                URI.create("string:///_CuminumGen_.java"),
+                JavaFileObject.Kind.SOURCE
+            ) {
+                @Override
+                public CharSequence getCharContent(boolean ignoreEncodingErrors) {
+                    return source;
+                }
+            };
+
+            var parser = parserFactory.newParser(
+                source, true, false, false);
+            return parser.parseCompilationUnit();
+        } catch (Exception e) {
+            processingEnv.getMessager().printMessage(
+                Diagnostic.Kind.ERROR,
+                "Cuminum: failed to parse generated source: " + e.getMessage()
+            );
+            return null;
+        }
+    }
+
+    /**
+     * Recursively reset all node positions to {@code Position.NOPOS} (-1)
+     * so javac doesn't map diagnostics to wrong source locations.
+     *
+     * <p>Uses a simple recursive walk to avoid module-access issues that
+     * arise from subclassing {@code JCTree.Visitor} from the unnamed module.</p>
+     */
+    @SuppressWarnings("unchecked")
+    private static void resetPositions(JCTree node) {
+        if (node == null) return;
+        node.pos = com.sun.tools.javac.util.Position.NOPOS;
+
+        // Walk children based on known types
+        if (node instanceof JCVariableDecl vd) {
+            if (vd.mods != null) vd.mods.pos = com.sun.tools.javac.util.Position.NOPOS;
+            resetPositions(vd.vartype);
+            resetPositions(vd.init);
+        } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCFieldAccess fa) {
+            resetPositions(fa.selected);
+        } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCMethodInvocation mi) {
+            resetPositions(mi.meth);
+            if (mi.args != null) for (JCTree a : mi.args) resetPositions(a);
+        } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCLambda lambda) {
+            if (lambda.params != null) for (JCVariableDecl p : lambda.params) resetPositions(p);
+            if (lambda.body instanceof JCTree body) resetPositions(body);
+        } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCMemberReference mr) {
+            resetPositions(mr.expr);
+        } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCTypeApply ta) {
+            resetPositions(ta.clazz);
+            if (ta.arguments != null) for (JCTree a : ta.arguments) resetPositions(a);
+        } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCClassDecl cd) {
+            if (cd.defs != null) for (JCTree d : cd.defs) resetPositions(d);
+        } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCBlock block) {
+            if (block.stats != null) for (JCTree s : block.stats) resetPositions(s);
+        } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCReturn ret) {
+            resetPositions(ret.expr);
+        } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCNewClass nc) {
+            if (nc.args != null) for (JCTree a : nc.args) resetPositions(a);
+            resetPositions(nc.clazz);
+        } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCAnnotation ann) {
+            resetPositions(ann.annotationType);
+            if (ann.args != null) for (JCTree a : ann.args) resetPositions(a);
+        }
+    }
+
+    // ── Utility methods ─────────────────────────────────────────────────
+
+    private boolean isRawTypeString(TypeMirror type, String rawCanonicalName) {
+        if (type instanceof DeclaredType declaredType) {
             Element element = declaredType.asElement();
             if (element instanceof TypeElement typeElement) {
-                return typeElement.getQualifiedName().contentEquals(rawTypeCanonicalName);
+                return typeElement.getQualifiedName().contentEquals(rawCanonicalName);
             }
         }
         return false;
     }
 
     private boolean hasNullableAnnotation(@NonNull Element element) {
-        return element.getAnnotationMirrors().stream().anyMatch(mirror -> {
-            String annotationType = mirror.getAnnotationType().toString();
-            return annotationType.endsWith(".Nullable"); // 匹配 javax.annotation.Nullable, org.jetbrains.annotations.Nullable 等
-        });
+        return element.getAnnotationMirrors().stream().anyMatch(mirror ->
+            mirror.getAnnotationType().toString().endsWith(".Nullable"));
     }
 
-    /**
-     * 获取泛型的第一个参数类型。例如从 List<String> 中提取 String
-     */
     private TypeMirror getGenericArgument(TypeMirror type, int index) {
         if (type instanceof DeclaredType declaredType) {
             List<? extends TypeMirror> args = declaredType.getTypeArguments();
-            if (args.size() > index) {
-                return args.get(index);
-            }
+            if (args.size() > index) return args.get(index);
         }
-        // 兜底返回 Object
-        return processingEnv.getElementUtils().getTypeElement("java.lang.Object").asType();
+        return processingEnv.getElementUtils()
+            .getTypeElement("java.lang.Object").asType();
     }
 
-    private @NonNull CodeBlock getGetterExpression(@NonNull TypeElement clazz, @NonNull Element member, boolean isRecord) {
-        String name = member.getSimpleName().toString();
-        TypeName className = TypeName.get(clazz.asType());
+    /**
+     * Ensure the target class's compilation unit imports the types needed
+     * by the injected CODEC fields: {@code Codec}, {@code MapCodec},
+     * {@code RecordCodecBuilder}.
+     */
+    private void ensureImports(Symbol.ClassSymbol classSymbol) {
+        JCCompilationUnit unit = (JCCompilationUnit)
+            trees.getPath(classSymbol).getCompilationUnit();
+        if (unit == null) return;
 
-        if (isRecord) {
-            // Record 的访问器就是方法名本身，例如 PlayerData::name
-            return CodeBlock.of("$T::$L", className, name);
-        }
-
-        // --- 以下为普通类的逻辑 ---
-        if (!member.getModifiers().contains(Modifier.PRIVATE)) {
-            return CodeBlock.of("obj -> obj.$L", name);
-        } else {
-            // 尝试推测 Getter 名字 (兼容 Lombok)
-            String prefix = member.asType().getKind().name().equals("BOOLEAN") ? "is" : "get";
-            String getterName = prefix + capitalize(name);
-            return CodeBlock.of("$T::$L", className, getterName);
-        }
-    }
-
-    private CodeBlock resolveCodec(TypeMirror type) {
-        // 1. 处理 Optional<T>
-        // 注意：Optional 比较特殊，它的 Codec 其实是它内部 T 的 Codec，
-        // 只不过在生成 field 时改用 .optionalFieldOf()
-        if (isRawTypeString(type, "java.util.Optional")) {
-            TypeMirror innerType = getGenericArgument(type, 0);
-            return resolveCodec(innerType);
-        }
-
-        // 2. 处理 List<T> -> codecOfT.listOf()
-        if (isRawTypeString(type, "java.util.List")) {
-            TypeMirror innerType = getGenericArgument(type, 0);
-            return CodeBlock.of("$L.listOf()", resolveCodec(innerType));
-        }
-
-        // 3. 处理 Map<K, V> -> Codec.unboundedMap(keyCodec, valueCodec)
-        if (isRawTypeString(type, "java.util.Map")) {
-            TypeMirror keyType = getGenericArgument(type, 0);
-            TypeMirror valueType = getGenericArgument(type, 1);
-            return CodeBlock.of("$T.unboundedMap($L, $L)", CODEC, resolveCodec(keyType), resolveCodec(valueType));
-        }
-
-        // 4. 处理基础类型和常见 Minecraft 类型
-        String typeStr = type.toString();
-        return switch (typeStr) {
-            case "byte", "java.lang.Byte" -> CodeBlock.of("$T.BYTE", CODEC);
-            case "short", "java.lang.Short" -> CodeBlock.of("$T.SHORT", CODEC);
-            case "char", "java.lang.Character" -> CodeBlock.of("$T.CHAR", CODEC);
-            case "int", "java.lang.Integer" -> CodeBlock.of("$T.INT", CODEC);
-            case "long", "java.lang.Long" -> CodeBlock.of("$T.LONG", CODEC);
-            case "float", "java.lang.Float" -> CodeBlock.of("$T.FLOAT", CODEC);
-            case "double", "java.lang.Double" -> CodeBlock.of("$T.DOUBLE", CODEC);
-            case "boolean", "java.lang.Boolean" -> CodeBlock.of("$T.BOOL", CODEC);
-            case "java.lang.String" -> CodeBlock.of("$T.STRING", CODEC);
-
-            // 自动识别 Minecraft 常用类型 (如果类路径里有这些类的话)
-            case "net.minecraft.core.BlockPos" -> CodeBlock.of("$T.CODEC", ClassName.get("net.minecraft.core", "BlockPos"));
-
-            // 5. 处理自定义类型
-            default -> {
-                Element element = processingEnv.getTypeUtils().asElement(type);
-                // 如果该类型也被标记了 @AutoCodec，引用它生成的 CODEC
-                if (element != null && element.getAnnotation(AutoCodec.class) != null) {
-                    String pkg = processingEnv.getElementUtils().getPackageOf(element).getQualifiedName().toString();
-                    String className = element.getSimpleName().toString();
-                    yield CodeBlock.of("$T.CODEC", ClassName.get(pkg, className + "_CuminCodec"));
-                }
-                // 最后的兜底：假设该类内部定义了一个静态的 CODEC 字段
-                yield CodeBlock.of("$T.CODEC", TypeName.get(type));
-            }
+        String[] neededImports = {
+            "com.mojang.serialization.Codec",
+            "com.mojang.serialization.MapCodec",
+            "com.mojang.serialization.codecs.RecordCodecBuilder",
         };
+
+        for (String fqn : neededImports) {
+            boolean alreadyImported = false;
+            if (unit.defs != null) {
+                for (JCTree def : unit.defs) {
+                    if (def instanceof JCImport imp) {
+                        // qualid is a chain-select like com.mojang.serialization.Codec
+                        if (imp.qualid != null && fqn.equals(imp.qualid.toString())) {
+                            alreadyImported = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!alreadyImported) {
+                var qualidExpr = ast.chainIdent(fqn);
+                // chainIdent always returns JCFieldAccess for multi-part FQNs
+                JCImport imp = maker.Import(
+                    (com.sun.tools.javac.tree.JCTree.JCFieldAccess) qualidExpr, false);
+                imp.pos = com.sun.tools.javac.util.Position.NOPOS;
+                unit.defs = unit.defs.prepend(imp);
+            }
+        }
     }
 
-    private @NonNull String capitalize(@NonNull String str) {
+    private static String capitalize(@NonNull String str) {
+        if (str.isEmpty()) return str;
         return str.substring(0, 1).toUpperCase() + str.substring(1);
     }
 }

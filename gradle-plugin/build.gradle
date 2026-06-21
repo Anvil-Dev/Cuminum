@@ -1,5 +1,5 @@
 plugins {
-    id 'java'
+    id 'java-gradle-plugin'
 }
 
 group = 'dev.anvilcraft.resource'
@@ -7,6 +7,7 @@ version = '1.0.0'
 
 repositories {
     mavenCentral()
+    mavenLocal()
     maven {
         name = "Mojang"
         url = uri("https://libraries.minecraft.net")
@@ -14,22 +15,35 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.google.code.findbugs:jsr305:3.0.2'
-    implementation 'com.google.code.gson:gson:2.10.1'
-    implementation 'com.google.auto.service:auto-service:1.1.1'
-    annotationProcessor 'com.google.auto.service:auto-service:1.1.1'
-    implementation 'com.mojang:datafixerupper:8.0.16'
+    // Gradle API
+    implementation gradleApi()
 
-    testImplementation platform('org.junit:junit-bom:5.10.0')
-    testImplementation 'org.junit.jupiter:junit-jupiter'
-    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // 插件需要引用 processor 中的注解类（用 compileOnly，运行时由用户项目提供）
+    if (System.getenv("NOT_DEV") == 'true') {
+        compileOnly 'dev.anvilcraft.resource:cuminum-processor:latest.release'
+    } else {
+        compileOnly project(':cuminum-processor')
+    }
 }
 
-test {
-    useJUnitPlatform()
+gradlePlugin {
+    plugins {
+        decuminumPlugin {
+            id = 'dev.anvilcraft.resource.decuminum'
+            implementationClass = 'dev.anvilcraft.resource.cuminum.gradle.DecuminumPlugin'
+            displayName = 'Decuminum Gradle Plugin'
+            description = 'Gradle plugin to run Cuminum annotation processor and expose generated sources, similar to Lombok\'s delombok'
+        }
+    }
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
 }
 
 tasks.withType(JavaCompile).configureEach {
+    options.release = 21
     options.compilerArgs.addAll(
         '--add-exports', 'jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED',
         '--add-exports', 'jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED',

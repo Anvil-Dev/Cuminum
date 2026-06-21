@@ -96,8 +96,13 @@ sourceSets.main.resources { srcDir 'src/generated/resources' }
 
 
 dependencies {
-    implementation project(':processor')
-    annotationProcessor project(':processor')
+    if (System.getenv("NOT_DEV") == 'true') {
+        implementation project('dev.anvilcraft.resource:cuminum-processor:latest.release')
+        annotationProcessor project('dev.anvilcraft.resource:cuminum-processor:latest.release')
+    } else {
+        implementation project(':cuminum-processor')
+        annotationProcessor project(':cuminum-processor')
+    }
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.
@@ -148,4 +153,17 @@ idea {
         downloadSources = true
         downloadJavadoc = true
     }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs.addAll(
+        '--add-exports', 'jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED',
+        '--add-exports', 'jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED',
+        '--add-exports', 'jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED',
+        '--add-exports', 'jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED',
+        '--add-exports', 'jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED',
+        '--add-exports', 'jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED',
+        '--add-exports', 'jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED',
+        '--add-exports', 'jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED'
+    )
 }
