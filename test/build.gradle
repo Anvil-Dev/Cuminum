@@ -197,3 +197,6 @@ tasks.withType(JavaCompile).configureEach {
 lombok {
     version = "1.18.44"
 }
+
+decuminum {
+}

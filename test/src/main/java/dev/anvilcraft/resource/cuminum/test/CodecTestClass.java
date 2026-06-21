@@ -1,9 +1,10 @@
 package dev.anvilcraft.resource.cuminum.test;
 
 import com.mojang.serialization.Codec;
+import com.mojang.serialization.JsonOps;
+import dev.anvilcraft.resource.cuminum.CodecIgnore;
 import dev.anvilcraft.resource.cuminum.codec.AutoCodec;
 import dev.anvilcraft.resource.cuminum.codec.CodecField;
-import dev.anvilcraft.resource.cuminum.CodecIgnore;
 
 import java.util.List;
 import java.util.Map;
@@ -18,8 +19,7 @@ public record CodecTestClass(
     double test5,
     @CodecField("test_test") long test6,
     short test7,
-    @Nullable
-    Double test8,
+    @Nullable Double test8,
     List<String> test9,
     List<Integer> test10,
     Map<String, Integer> test11,
@@ -44,11 +44,38 @@ public record CodecTestClass(
 
     @Override
     public String toString() {
-        return "CodecTest{" + "test='" + test + '\'' + ", test2=" + test2 + ", test3=" + test3 + ", test4=" + test4 + ", test5=" + test5 + ", test6=" + test6 + ", test7=" + test7 + ", test8=" + test8 + ", test9=" + test9 + ", test10=" + test10 + ", test11=" + test11 + ", test12=" + test12 + ", test13=" + test13 + '}';
+        return "CodecTest{"
+               + "test='" + test + '\''
+               + ", test2=" + test2
+               + ", test3=" + test3
+               + ", test4=" + test4
+               + ", test5=" + test5
+               + ", test6=" + test6
+               + ", test7=" + test7
+               + ", test8=" + test8
+               + ", test9=" + test9
+               + ", test10=" + test10
+               + ", test11=" + test11
+               + ", test12=" + test12
+               + ", test13=" + test13
+               + '}';
     }
 
     public static void main(String[] args) {
         Codec<CodecTestClass> codec = CodecTestClass.CODEC;
-
+        CodecTestClass test = new CodecTestClass(
+            "test",
+            1,
+            true,
+            1.0f,
+            1.0,
+            1L,
+            (short) 1,
+            1.0,
+            List.of("test"),
+            List.of(1),
+            Map.of("test", 1)
+        );
+        codec.encodeStart(JsonOps.INSTANCE, test).result().ifPresent(System.out::println);
     }
 }
