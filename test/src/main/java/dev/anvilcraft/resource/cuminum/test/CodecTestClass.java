@@ -1,5 +1,6 @@
 package dev.anvilcraft.resource.cuminum.test;
 
+import com.mojang.serialization.Codec;
 import dev.anvilcraft.resource.cuminum.codec.AutoCodec;
 import dev.anvilcraft.resource.cuminum.codec.CodecField;
 import dev.anvilcraft.resource.cuminum.CodecIgnore;
@@ -47,6 +48,7 @@ public record CodecTestClass(
     }
 
     public static void main(String[] args) {
-        CodecTestClass.CODEC;
+        Codec<CodecTestClass> codec = CodecTestClass.CODEC;
+
     }
 }

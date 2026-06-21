@@ -4,6 +4,7 @@ plugins {
     id 'idea'
     id 'net.neoforged.moddev' version '2.0.139'
     id 'io.freefair.lombok' version '8.7.1'
+    id 'dev.anvilcraft.resource.cuminum'  version "1.0.0"
 }
 
 version = mod_version

@@ -164,7 +164,7 @@ public class AutoCodecProcessor extends AbstractProcessor {
         String className = typeElement.getSimpleName().toString();
         boolean isRecord = typeElement.getKind() == ElementKind.RECORD;
 
-        // Build source code for the fields, parse, and inject
+        // Build source code for the fields, parse, and inject directly
         String source = generateFieldSource(packageName, className, typeElement,
             codecType, isRecord);
         if (source.isEmpty()) {
@@ -176,14 +176,12 @@ public class AutoCodecProcessor extends AbstractProcessor {
         JCCompilationUnit parsed = parseSource(source);
         if (parsed == null) return;
 
-        // Add necessary imports to the target class's compilation unit.
-        // The injected fields reference Codec/MapCodec/RecordCodecBuilder
-        // by simple name, so the target must import them.
+        // Add necessary imports to the target class's compilation unit
         ensureImports(classSymbol);
 
         // Extract the generated wrapper class, then its fields, and inject.
-        // CRITICAL: reset all node positions to NOPOS (-1) so javac doesn't
-        // map them back to wrong locations in the original source file.
+        // Reset all positions to NOPOS (-1) so javac doesn't confuse the
+        // flow analyzer with positions from the generated source string.
         for (JCTree topDef : parsed.defs) {
             if (topDef instanceof JCClassDecl wrapperClass) {
                 for (JCTree member : wrapperClass.defs) {
@@ -191,8 +189,6 @@ public class AutoCodecProcessor extends AbstractProcessor {
                         String name = vd.name.toString();
                         if ("CODEC".equals(name) && hasCodec) continue;
                         if ("MAP_CODEC".equals(name) && hasMapCodec) continue;
-                        // Don't reset positions — parsed nodes carry correct
-                        // type attribution from javac's own parser.
                         classDecl.defs = classDecl.defs.append(vd);
                         processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE,
                             "Cuminum: injected " + name + " into " + className);
@@ -207,7 +203,7 @@ public class AutoCodecProcessor extends AbstractProcessor {
     /**
      * Generate a complete Java class source string containing only the
      * CODEC/MAP_CODEC fields. This is parsed by javac to get properly
-     * attributed AST nodes.
+     * attributed AST nodes, then injected into the target class.
      */
     private String generateFieldSource(String pkg, String className,
                                         TypeElement typeElement,
@@ -220,23 +216,49 @@ public class AutoCodecProcessor extends AbstractProcessor {
         sb.append("import com.mojang.serialization.codecs.RecordCodecBuilder;\n");
         sb.append("public final class _CuminumGen_").append(className).append(" {\n");
 
-        // Generate field blocks source
         String fieldBlocks = generateFieldBlocksSource(typeElement, className, isRecord);
         if (fieldBlocks.isEmpty()) return "";
 
-        if (codecType == AutoCodec.CodecType.CODEC) {
-            sb.append("  public static final Codec<").append(className)
-                .append("> CODEC = RecordCodecBuilder.create(instance -> instance.group(\n");
-            sb.append(fieldBlocks);
-            sb.append("  ).apply(instance, ").append(className).append("::new));\n");
+        if (isRecord) {
+            // For records: use static init block to avoid javac flow analysis
+            // crash on injected lambda AST nodes (JDK bug in Bits.incl).
+            // Static init blocks have proper scope handling unlike field
+            // initializers.
+            sb.append("  public static final MapCodec<").append(className).append("> MAP_CODEC;\n");
+            sb.append("  public static final Codec<").append(className).append("> CODEC;\n");
+            sb.append("  static {\n");
+
+            if (codecType == AutoCodec.CodecType.CODEC) {
+                sb.append("    CODEC = RecordCodecBuilder.create(instance -> instance.group(\n");
+                sb.append(fieldBlocks);
+                sb.append("    ).apply(instance, ").append(className).append("::new));\n");
+            } else if (codecType == AutoCodec.CodecType.MAP_CODEC) {
+                sb.append("    MAP_CODEC = RecordCodecBuilder.mapCodec(instance -> instance.group(\n");
+                sb.append(fieldBlocks);
+                sb.append("    ).apply(instance, ").append(className).append("::new));\n");
+            } else { // BOTH
+                sb.append("    MAP_CODEC = RecordCodecBuilder.mapCodec(instance -> instance.group(\n");
+                sb.append(fieldBlocks);
+                sb.append("    ).apply(instance, ").append(className).append("::new));\n");
+                sb.append("    CODEC = MAP_CODEC.codec();\n");
+            }
+            sb.append("  }\n");
         } else {
-            sb.append("  public static final MapCodec<").append(className)
-                .append("> MAP_CODEC = RecordCodecBuilder.mapCodec(instance -> instance.group(\n");
-            sb.append(fieldBlocks);
-            sb.append("  ).apply(instance, ").append(className).append("::new));\n");
-            if (codecType == AutoCodec.CodecType.BOTH) {
+            // Non-record classes: field initializer lambda works fine
+            if (codecType == AutoCodec.CodecType.CODEC) {
                 sb.append("  public static final Codec<").append(className)
-                    .append("> CODEC = MAP_CODEC.codec();\n");
+                    .append("> CODEC = RecordCodecBuilder.create(instance -> instance.group(\n");
+                sb.append(fieldBlocks);
+                sb.append("  ).apply(instance, ").append(className).append("::new));\n");
+            } else {
+                sb.append("  public static final MapCodec<").append(className)
+                    .append("> MAP_CODEC = RecordCodecBuilder.mapCodec(instance -> instance.group(\n");
+                sb.append(fieldBlocks);
+                sb.append("  ).apply(instance, ").append(className).append("::new));\n");
+                if (codecType == AutoCodec.CodecType.BOTH) {
+                    sb.append("  public static final Codec<").append(className)
+                        .append("> CODEC = MAP_CODEC.codec();\n");
+                }
             }
         }
 
