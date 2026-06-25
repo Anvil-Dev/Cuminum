@@ -6,6 +6,7 @@ import com.sun.tools.javac.code.Symbol;
 import com.sun.tools.javac.parser.ParserFactory;
 import com.sun.tools.javac.processing.JavacProcessingEnvironment;
 import com.sun.tools.javac.tree.JCTree;
+import com.sun.tools.javac.tree.JCTree.JCBlock;
 import com.sun.tools.javac.tree.JCTree.JCClassDecl;
 import com.sun.tools.javac.tree.JCTree.JCCompilationUnit;
 import com.sun.tools.javac.tree.JCTree.JCExpression;
@@ -179,9 +180,20 @@ public class AutoCodecProcessor extends AbstractProcessor {
         // Add necessary imports to the target class's compilation unit
         ensureImports(classSymbol);
 
-        // Extract the generated wrapper class, then its fields, and inject.
-        // Reset all positions to NOPOS (-1) so javac doesn't confuse the
-        // flow analyzer with positions from the generated source string.
+        // Extract the generated wrapper class, then its members, and inject.
+        // We inject both the CODEC/MAP_CODEC field declarations and, for
+        // records, the `static {}` initializer block (a JCBlock) — without the
+        // block the fields would be declared but never assigned.
+        //
+        // Position handling (see anchorPositions): nodes parsed from the
+        // generated string carry positions foreign to the target file. For the
+        // record case (uninitialized fields + a static block) every injected
+        // node is anchored to the class's position so flow analysis orders the
+        // field declarations and their assignments correctly. A field WITH an
+        // initializer (the non-record lambda case) is left untouched, because
+        // anchoring a field-initializer lambda corrupts javac's type inference
+        // and breaks forGetter.
+        int anchorPos = classDecl.pos;
         for (JCTree topDef : parsed.defs) {
             if (topDef instanceof JCClassDecl wrapperClass) {
                 for (JCTree member : wrapperClass.defs) {
@@ -189,9 +201,19 @@ public class AutoCodecProcessor extends AbstractProcessor {
                         String name = vd.name.toString();
                         if ("CODEC".equals(name) && hasCodec) continue;
                         if ("MAP_CODEC".equals(name) && hasMapCodec) continue;
+                        if (vd.init == null) anchorPositions(vd, anchorPos);
                         classDecl.defs = classDecl.defs.append(vd);
                         processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE,
-                            "Cuminum: injected " + name + " into " + className);
+                            "Cuminum: injected field " + name + " into " + className);
+                    } else if (member instanceof JCBlock block && block.isStatic()) {
+                        // The static initializer that assigns the record's
+                        // CODEC/MAP_CODEC fields. Skip entirely when both
+                        // fields already exist (nothing left to assign).
+                        if (hasCodec && hasMapCodec) continue;
+                        anchorPositions(block, anchorPos);
+                        classDecl.defs = classDecl.defs.append(block);
+                        processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE,
+                            "Cuminum: injected static initializer into " + className);
                     }
                 }
             }
@@ -220,10 +242,10 @@ public class AutoCodecProcessor extends AbstractProcessor {
         if (fieldBlocks.isEmpty()) return "";
 
         if (isRecord) {
-            // For records: use static init block to avoid javac flow analysis
-            // crash on injected lambda AST nodes (JDK bug in Bits.incl).
-            // Static init blocks have proper scope handling unlike field
-            // initializers.
+            // For records: a lambda inside a field initializer crashes javac's
+            // definite-assignment analyzer (Bits.incl / Flow.visitLambda — a JDK
+            // bug). A static init block sidesteps it, so declare the fields
+            // uninitialized and assign them in a `static {}` block.
             sb.append("  public static final MapCodec<").append(className).append("> MAP_CODEC;\n");
             sb.append("  public static final Codec<").append(className).append("> CODEC;\n");
             sb.append("  static {\n");
@@ -244,7 +266,7 @@ public class AutoCodecProcessor extends AbstractProcessor {
             }
             sb.append("  }\n");
         } else {
-            // Non-record classes: field initializer lambda works fine
+            // Non-record classes: a field initializer lambda works fine.
             if (codecType == AutoCodec.CodecType.CODEC) {
                 sb.append("  public static final Codec<").append(className)
                     .append("> CODEC = RecordCodecBuilder.create(instance -> instance.group(\n");
@@ -442,47 +464,71 @@ public class AutoCodecProcessor extends AbstractProcessor {
     }
 
     /**
-     * Recursively reset all node positions to {@code Position.NOPOS} (-1)
-     * so javac doesn't map diagnostics to wrong source locations.
+     * Recursively set every node's position to {@code anchorPos} — a valid
+     * offset inside the target source file (the annotated class's position).
      *
-     * <p>Uses a simple recursive walk to avoid module-access issues that
-     * arise from subclassing {@code JCTree.Visitor} from the unnamed module.</p>
+     * <p>The injected nodes were parsed from a generated wrapper string, so
+     * they carry positions that point nowhere in the target file. Two things
+     * go wrong if left alone: (1) javac's definite-assignment analyzer mis-
+     * orders the injected {@code static} block against the record's own
+     * members and reports spurious "variable might already be assigned"
+     * errors; (2) diagnostics map to wrong lines.</p>
+     *
+     * <p>Crucially we anchor to a real position rather than {@code NOPOS}
+     * (-1): {@code NOPOS} breaks {@code Flow}'s lambda analysis (the bit-set
+     * logic in {@code Bits}), which silently corrupts {@code forGetter} type
+     * inference. This mirrors Lombok's {@code setGeneratedBy}, which sets
+     * {@code node.pos = sourceNode.getStartPos()}.</p>
+     *
+     * <p>Implemented as a manual recursive walk rather than a
+     * {@code TreeScanner} subclass: subclassing a {@code jdk.compiler} class
+     * from the unnamed module fails the JVM superclass access check (the
+     * package is opened reflectively at runtime, but the check happens at
+     * class load).</p>
      */
-    @SuppressWarnings("unchecked")
-    private static void resetPositions(JCTree node) {
+    private static void anchorPositions(JCTree node, int anchorPos) {
         if (node == null) return;
-        node.pos = com.sun.tools.javac.util.Position.NOPOS;
+        node.pos = anchorPos;
 
-        // Walk children based on known types
         if (node instanceof JCVariableDecl vd) {
-            if (vd.mods != null) vd.mods.pos = com.sun.tools.javac.util.Position.NOPOS;
-            resetPositions(vd.vartype);
-            resetPositions(vd.init);
+            if (vd.mods != null) vd.mods.pos = anchorPos;
+            anchorPositions(vd.vartype, anchorPos);
+            anchorPositions(vd.init, anchorPos);
         } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCFieldAccess fa) {
-            resetPositions(fa.selected);
+            anchorPositions(fa.selected, anchorPos);
         } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCMethodInvocation mi) {
-            resetPositions(mi.meth);
-            if (mi.args != null) for (JCTree a : mi.args) resetPositions(a);
+            anchorPositions(mi.meth, anchorPos);
+            if (mi.typeargs != null) for (JCTree a : mi.typeargs) anchorPositions(a, anchorPos);
+            if (mi.args != null) for (JCTree a : mi.args) anchorPositions(a, anchorPos);
         } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCLambda lambda) {
-            if (lambda.params != null) for (JCVariableDecl p : lambda.params) resetPositions(p);
-            if (lambda.body instanceof JCTree body) resetPositions(body);
+            // Anchor the lambda node itself but NOT its body: re-anchoring the
+            // body's positions corrupts javac's lambda type inference (the
+            // forGetter argument collapses to a wrong type, breaking group()).
+            // The body keeps its parsed positions, which attribution handles.
+            return;
         } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCMemberReference mr) {
-            resetPositions(mr.expr);
+            anchorPositions(mr.expr, anchorPos);
+            if (mr.typeargs != null) for (JCTree a : mr.typeargs) anchorPositions(a, anchorPos);
         } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCTypeApply ta) {
-            resetPositions(ta.clazz);
-            if (ta.arguments != null) for (JCTree a : ta.arguments) resetPositions(a);
+            anchorPositions(ta.clazz, anchorPos);
+            if (ta.arguments != null) for (JCTree a : ta.arguments) anchorPositions(a, anchorPos);
         } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCClassDecl cd) {
-            if (cd.defs != null) for (JCTree d : cd.defs) resetPositions(d);
+            if (cd.defs != null) for (JCTree d : cd.defs) anchorPositions(d, anchorPos);
         } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCBlock block) {
-            if (block.stats != null) for (JCTree s : block.stats) resetPositions(s);
+            if (block.stats != null) for (JCTree s : block.stats) anchorPositions(s, anchorPos);
+        } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCExpressionStatement es) {
+            anchorPositions(es.expr, anchorPos);
+        } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCAssign assign) {
+            anchorPositions(assign.lhs, anchorPos);
+            anchorPositions(assign.rhs, anchorPos);
         } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCReturn ret) {
-            resetPositions(ret.expr);
+            anchorPositions(ret.expr, anchorPos);
         } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCNewClass nc) {
-            if (nc.args != null) for (JCTree a : nc.args) resetPositions(a);
-            resetPositions(nc.clazz);
+            if (nc.args != null) for (JCTree a : nc.args) anchorPositions(a, anchorPos);
+            anchorPositions(nc.clazz, anchorPos);
         } else if (node instanceof com.sun.tools.javac.tree.JCTree.JCAnnotation ann) {
-            resetPositions(ann.annotationType);
-            if (ann.args != null) for (JCTree a : ann.args) resetPositions(a);
+            anchorPositions(ann.annotationType, anchorPos);
+            if (ann.args != null) for (JCTree a : ann.args) anchorPositions(a, anchorPos);
         }
     }
 

@@ -47,12 +47,6 @@ public class CuminumPlugin implements Plugin<Project> {
             task.getOutputDir().set(extension.getOutputDir());
         });
 
-        // Register generated .java sources into the main source set
-        SourceSetContainer sourceSets = project.getExtensions()
-            .getByType(SourceSetContainer.class);
-        SourceSet main = sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME);
-        main.getJava().srcDir(extension.getOutputDir());
-
         project.getTasks().register("decuminumClean", CuminumCleanTask.class, task -> {
             task.setGroup("cuminum");
             task.setDescription("清理 decuminum 生成的源码");
